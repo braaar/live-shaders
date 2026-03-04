@@ -82,6 +82,7 @@ void main() {
   const FFT_PEAK_NORMALIZATION = true;
   const FFT_PEAK_MIN_VALUE = 0.01;
   const FFT_PEAK_SMOOTHING = 0.995;
+  const FFT_OUTPUT_GAIN = 0.7;
   const FFT_INTEGRATED_SCALE = 60.0;
   const FFT_INTEGRATED_WRAP = 1024.0;
 
@@ -617,6 +618,7 @@ void main() {
         raw: new Float32Array(FFT_BIN_COUNT),
         smooth: new Float32Array(FFT_BIN_COUNT),
         slightlySmooth: new Float32Array(FFT_BIN_COUNT),
+        integratedState: new Float32Array(FFT_BIN_COUNT),
         integrated: new Float32Array(FFT_BIN_COUNT),
         amplification: 1,
         peakLevel: FFT_PEAK_MIN_VALUE,
@@ -685,7 +687,8 @@ void main() {
       };
     }
 
-    const { analyser, freq, raw, smooth, slightlySmooth, integrated } = audioSystem;
+    const { analyser, freq, raw, smooth, slightlySmooth, integratedState, integrated } =
+      audioSystem;
     if (analyser && freq) {
       analyser.getFloatFrequencyData(freq);
 
@@ -693,7 +696,10 @@ void main() {
       for (let i = 0; i < raw.length; i += 1) {
         const db = freq[i];
         const magnitude = Number.isFinite(db) ? Math.pow(10, db / 20) * 2 : 0;
-        raw[i] = magnitude * audioSystem.amplification;
+        let value = magnitude * audioSystem.amplification * FFT_OUTPUT_GAIN;
+        if (i === 0) value *= 0.35;
+        else if (i === 1) value *= 0.65;
+        raw[i] = Math.min(1, value);
         if (magnitude > framePeak) framePeak = magnitude;
       }
 
@@ -709,9 +715,6 @@ void main() {
           }
         }
         audioSystem.amplification = 1 / audioSystem.peakLevel;
-        for (let i = 0; i < raw.length; i += 1) {
-          raw[i] = raw[i] * audioSystem.amplification;
-        }
       }
     } else {
       raw.fill(0);
@@ -724,10 +727,11 @@ void main() {
       slightlySmooth[i] =
         slightlySmooth[i] * FFT_SLIGHT_SMOOTH_FACTOR +
         raw[i] * (1 - FFT_SLIGHT_SMOOTH_FACTOR);
-      integrated[i] = integrated[i] + slightlySmooth[i] * integratedScale;
-      if (integrated[i] > FFT_INTEGRATED_WRAP) {
-        integrated[i] -= FFT_INTEGRATED_WRAP;
+      integratedState[i] = integratedState[i] + slightlySmooth[i] * integratedScale;
+      if (integratedState[i] > FFT_INTEGRATED_WRAP) {
+        integratedState[i] -= FFT_INTEGRATED_WRAP;
       }
+      integrated[i] = integratedState[i] / FFT_INTEGRATED_WRAP;
     }
 
     return { raw, smooth, integrated };
