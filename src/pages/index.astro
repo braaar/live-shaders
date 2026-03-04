@@ -1,0 +1,862 @@
+---
+// @ts-nocheck
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const shadersRoot = fileURLToPath(new URL("../../public/shaders", import.meta.url));
+
+async function collectShaderFiles(directory, prefix = "") {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    const nextPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const fullPath = join(directory, entry.name);
+
+    if (entry.isDirectory()) {
+      files.push(...(await collectShaderFiles(fullPath, nextPrefix)));
+      continue;
+    }
+
+    if (entry.isFile() && entry.name.endsWith(".glsl")) {
+      files.push(nextPrefix.replace(/\\/g, "/"));
+    }
+  }
+
+  return files;
+}
+
+let shaderFiles = [];
+try {
+  shaderFiles = (await collectShaderFiles(shadersRoot)).sort();
+} catch {
+  shaderFiles = [];
+}
+const baseUrl = import.meta.env.BASE_URL;
+---
+
+<script define:vars={{ shaderFiles, baseUrl }}>
+  // @ts-nocheck
+  const SHADER_FILES = shaderFiles;
+
+  const BASE_URL = baseUrl;
+
+  const vertexSource = `#version 300 es
+precision highp float;
+const vec2 verts[3] = vec2[3](
+	vec2(-1.0, -1.0),
+	vec2(3.0, -1.0),
+	vec2(-1.0, 3.0)
+);
+void main() {
+	gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);
+}`;
+
+  const startTime = performance.now();
+  let lastFrameTime = startTime;
+
+  function createCard(name) {
+    const root = document.createElement("article");
+    root.className = "card";
+
+    const head = document.createElement("div");
+    head.className = "card-head";
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "name";
+    nameEl.textContent = name;
+
+    const statusEl = document.createElement("div");
+    statusEl.className = "status";
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+
+    const log = document.createElement("pre");
+    log.className = "log";
+
+    head.append(nameEl, statusEl);
+    root.append(head, canvas, log);
+
+    return { root, canvas, statusEl, log };
+  }
+
+  function setStatus(ui, ok, text, details = "") {
+    ui.statusEl.className = `status ${ok ? "ok" : "err"}`;
+    ui.statusEl.textContent = text;
+    ui.log.className = `log ${ok ? "ok-log" : ""}`;
+    ui.log.textContent = details;
+  }
+
+  function compileShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    const ok = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+    const info = gl.getShaderInfoLog(shader) || "";
+    if (!ok) {
+      gl.deleteShader(shader);
+      throw new Error(info.trim() || "Unknown shader compile error");
+    }
+    return { shader, info: info.trim() };
+  }
+
+  function linkProgram(gl, vs, fs) {
+    const program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    const ok = gl.getProgramParameter(program, gl.LINK_STATUS);
+    const info = gl.getProgramInfoLog(program) || "";
+    if (!ok) {
+      gl.deleteProgram(program);
+      throw new Error(info.trim() || "Unknown program link error");
+    }
+    return { program, info: info.trim() };
+  }
+
+  function tokenizeGLSL(src) {
+    const tokens = [];
+    let i = 0;
+
+    while (i < src.length) {
+      const ch = src[i];
+
+      if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") {
+        let j = i + 1;
+        while (
+          j < src.length &&
+          (src[j] === " " ||
+            src[j] === "\t" ||
+            src[j] === "\r" ||
+            src[j] === "\n")
+        )
+          j += 1;
+        tokens.push({ type: "ws", text: src.slice(i, j) });
+        i = j;
+        continue;
+      }
+
+      if (ch === "/" && src[i + 1] === "/") {
+        let j = i + 2;
+        while (j < src.length && src[j] !== "\n") j += 1;
+        tokens.push({ type: "comment", text: src.slice(i, j) });
+        i = j;
+        continue;
+      }
+
+      if (ch === "/" && src[i + 1] === "*") {
+        let j = i + 2;
+        while (j < src.length && !(src[j] === "*" && src[j + 1] === "/"))
+          j += 1;
+        j = Math.min(src.length, j + 2);
+        tokens.push({ type: "comment", text: src.slice(i, j) });
+        i = j;
+        continue;
+      }
+
+      const lineStart = i === 0 || src[i - 1] === "\n";
+      if (lineStart) {
+        let k = i;
+        while (k < src.length && (src[k] === " " || src[k] === "\t")) k += 1;
+        if (src[k] === "#") {
+          let j = k + 1;
+          while (j < src.length && src[j] !== "\n") j += 1;
+          if (k > i) tokens.push({ type: "ws", text: src.slice(i, k) });
+          tokens.push({ type: "preproc", text: src.slice(k, j) });
+          i = j;
+          continue;
+        }
+      }
+
+      if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_") {
+        let j = i + 1;
+        while (j < src.length) {
+          const c = src[j];
+          const isWord =
+            (c >= "A" && c <= "Z") ||
+            (c >= "a" && c <= "z") ||
+            (c >= "0" && c <= "9") ||
+            c === "_";
+          if (!isWord) break;
+          j += 1;
+        }
+        tokens.push({ type: "ident", text: src.slice(i, j) });
+        i = j;
+        continue;
+      }
+
+      if (
+        (ch >= "0" && ch <= "9") ||
+        (ch === "." && src[i + 1] >= "0" && src[i + 1] <= "9")
+      ) {
+        let j = i;
+        let hasDot = false;
+        let hasExp = false;
+
+        if (src[j] === ".") {
+          hasDot = true;
+          j += 1;
+        }
+
+        while (j < src.length && src[j] >= "0" && src[j] <= "9") j += 1;
+        if (src[j] === ".") {
+          hasDot = true;
+          j += 1;
+          while (j < src.length && src[j] >= "0" && src[j] <= "9") j += 1;
+        }
+        if (src[j] === "e" || src[j] === "E") {
+          hasExp = true;
+          j += 1;
+          if (src[j] === "+" || src[j] === "-") j += 1;
+          while (j < src.length && src[j] >= "0" && src[j] <= "9") j += 1;
+        }
+
+        tokens.push({
+          type: "number",
+          text: src.slice(i, j),
+          isIntegerLiteral: !hasDot && !hasExp,
+        });
+        i = j;
+        continue;
+      }
+
+      const two = src.slice(i, i + 2);
+      if (
+        [
+          "<=",
+          ">=",
+          "==",
+          "!=",
+          "&&",
+          "||",
+          "++",
+          "--",
+          "+=",
+          "-=",
+          "*=",
+          "/=",
+          "%=",
+        ].includes(two)
+      ) {
+        tokens.push({ type: "punct", text: two });
+        i += 2;
+        continue;
+      }
+
+      if ("(){}[];,:+-*/%<>=!?".includes(ch)) {
+        tokens.push({ type: "punct", text: ch });
+        i += 1;
+        continue;
+      }
+
+      tokens.push({ type: "other", text: ch });
+      i += 1;
+    }
+
+    return tokens;
+  }
+
+  function bonzomaticFloatLiteralPass(src) {
+    const tokens = tokenizeGLSL(src);
+    const sigIndices = [];
+    for (let i = 0; i < tokens.length; i += 1) {
+      const type = tokens[i].type;
+      if (type !== "ws" && type !== "comment") sigIndices.push(i);
+    }
+
+    const sigPos = new Map();
+    for (let i = 0; i < sigIndices.length; i += 1) sigPos.set(sigIndices[i], i);
+
+    const intTypeKeywords = new Set([
+      "int",
+      "ivec2",
+      "ivec3",
+      "ivec4",
+      "uint",
+      "uvec2",
+      "uvec3",
+      "uvec4",
+    ]);
+    const relationalOps = new Set(["<", ">", "<=", ">=", "==", "!="]);
+
+    let squareDepth = 0;
+    let layoutDepth = 0;
+    let pendingLayoutParen = false;
+    let intDeclDepth = 0;
+
+    for (let i = 0; i < tokens.length; i += 1) {
+      const tok = tokens[i];
+
+      if (tok.type === "ident" && tok.text === "layout") {
+        pendingLayoutParen = true;
+      }
+
+      if (tok.type === "punct") {
+        if (tok.text === "(") {
+          if (pendingLayoutParen) {
+            layoutDepth += 1;
+            pendingLayoutParen = false;
+          } else if (layoutDepth > 0) {
+            layoutDepth += 1;
+          }
+        } else if (tok.text === ")") {
+          if (layoutDepth > 0) layoutDepth -= 1;
+        } else if (tok.text === "[") {
+          squareDepth += 1;
+        } else if (tok.text === "]") {
+          if (squareDepth > 0) squareDepth -= 1;
+        } else if (tok.text === ";") {
+          intDeclDepth = 0;
+        }
+      }
+
+      if (tok.type === "ident" && intTypeKeywords.has(tok.text)) {
+        intDeclDepth += 1;
+      }
+
+      if (tok.type !== "number" || !tok.isIntegerLiteral) continue;
+      if (squareDepth > 0 || layoutDepth > 0 || intDeclDepth > 0) continue;
+
+      const pos = sigPos.get(i);
+      const prev = pos > 0 ? tokens[sigIndices[pos - 1]] : null;
+      const next =
+        pos < sigIndices.length - 1 ? tokens[sigIndices[pos + 1]] : null;
+
+      if (
+        (prev && relationalOps.has(prev.text)) ||
+        (next && relationalOps.has(next.text))
+      )
+        continue;
+
+      const prevText = prev ? prev.text : "";
+      const nextText = next ? next.text : "";
+
+      const looksLikeFloatContext =
+        ["=", "+", "-", "*", "/", "%", "(", ",", ":", "?", "return"].includes(
+          prevText,
+        ) ||
+        ["+", "-", "*", "/", "%", ")", ",", ";", "}", ":", "?"].includes(
+          nextText,
+        );
+
+      if (!looksLikeFloatContext) continue;
+
+      tok.text = `${tok.text}.0`;
+      tok.isIntegerLiteral = false;
+    }
+
+    return tokens.map((t) => t.text).join("");
+  }
+
+  function bonzomaticToWebGL2(src) {
+    let out = src;
+    out = out.replace(/^\s*#version\s+[^\n]*\n?/m, "");
+    out = out.replace(
+      /uniform\s+sampler1D\s+(\w+)\s*;/g,
+      "uniform sampler2D $1;",
+    );
+    out = out.replace(
+      /texture\s*\(\s*(texFFT|texFFTSmoothed|texFFTIntegrated)\s*,/g,
+      "texture1D($1,",
+    );
+    out = bonzomaticFloatLiteralPass(out);
+
+    const header = `#version 300 es
+precision highp float;
+precision highp int;
+
+vec4 texture1D(sampler2D t, float x) {
+	return texture(t, vec2(fract(x), 0.5));
+}
+
+`;
+
+    return `${header}${out}`;
+  }
+
+  function shadertoyToWebGL2(src) {
+    let out = src;
+    out = out.replace(/^\s*#version\s+[^\n]*\n?/m, "");
+    out = out.replace(/\btexture2D\s*\(/g, "texture(");
+    out = out.replace(/\btextureCube\s*\(/g, "texture(");
+
+    if (/\bgl_FragColor\b/.test(out)) {
+      out = out.replace(/\bgl_FragColor\b/g, "out_color");
+    }
+
+    const hasMainImage = /void\s+mainImage\s*\(/.test(out);
+    const hasMain = /void\s+main\s*\(/.test(out);
+
+    const header = `#version 300 es
+precision highp float;
+precision highp int;
+
+uniform vec3 iResolution;
+uniform float iTime;
+uniform float iTimeDelta;
+uniform int iFrame;
+uniform vec4 iMouse;
+uniform vec4 iDate;
+uniform float iSampleRate;
+uniform sampler2D iChannel0;
+uniform sampler2D iChannel1;
+uniform sampler2D iChannel2;
+uniform sampler2D iChannel3;
+
+layout(location = 0) out vec4 out_color;
+
+`;
+
+    const mainWrapper = hasMainImage && !hasMain
+      ? `
+void main() {
+  mainImage(out_color, gl_FragCoord.xy);
+}
+`
+      : "";
+
+    return `${header}${out}${mainWrapper}`;
+  }
+
+  function prepareFragmentSource(src) {
+    const isShadertoy = /mainImage\s*\(/.test(src) || /\biResolution\b|\biTime\b|\biChannel[0-3]\b/.test(src);
+    if (isShadertoy) {
+      return {
+        source: shadertoyToWebGL2(src),
+        profile: "shadertoy",
+      };
+    }
+    return {
+      source: bonzomaticToWebGL2(src),
+      profile: "bonzomatic",
+    };
+  }
+
+  function makeTexture(
+    gl,
+    internalFormat,
+    width,
+    height,
+    format,
+    type,
+    pixels,
+  ) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      internalFormat,
+      width,
+      height,
+      0,
+      format,
+      type,
+      pixels,
+    );
+    return tex;
+  }
+
+  function createStaticTextures(gl) {
+    const black = makeTexture(
+      gl,
+      gl.RGBA,
+      1,
+      1,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 255]),
+    );
+
+    const checkerData = new Uint8Array(64 * 64 * 4);
+    for (let y = 0; y < 64; y += 1) {
+      for (let x = 0; x < 64; x += 1) {
+        const on = ((x >> 3) & 1) ^ ((y >> 3) & 1);
+        const c = on ? 235 : 30;
+        const i = (y * 64 + x) * 4;
+        checkerData[i + 0] = c;
+        checkerData[i + 1] = c;
+        checkerData[i + 2] = c;
+        checkerData[i + 3] = 255;
+      }
+    }
+    const checker = makeTexture(
+      gl,
+      gl.RGBA,
+      64,
+      64,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      checkerData,
+    );
+
+    const noiseData = new Uint8Array(64 * 64 * 4);
+    for (let i = 0; i < noiseData.length; i += 4) {
+      const v = Math.floor(Math.random() * 256);
+      noiseData[i + 0] = v;
+      noiseData[i + 1] = v;
+      noiseData[i + 2] = v;
+      noiseData[i + 3] = 255;
+    }
+    const noise = makeTexture(
+      gl,
+      gl.RGBA,
+      64,
+      64,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      noiseData,
+    );
+
+    return { black, checker, noise };
+  }
+
+  function createFFTTexture(gl) {
+    const tex = makeTexture(
+      gl,
+      gl.R32F,
+      256,
+      1,
+      gl.RED,
+      gl.FLOAT,
+      new Float32Array(256),
+    );
+    return { tex, data: new Float32Array(256) };
+  }
+
+  function updateFFT(gl, fft, time, mode = 0) {
+    const data = fft.data;
+    for (let i = 0; i < data.length; i += 1) {
+      const x = i / (data.length - 1);
+      const base =
+        Math.sin(time * (1.2 + mode * 0.4) + x * 20.0 + mode * 0.7) * 0.5 + 0.5;
+      const pulse = Math.max(0, Math.sin(time * (3.0 + mode) - x * 8.0));
+      data[i] = Math.min(1, base * 0.65 + pulse * 0.35);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, fft.tex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RED, gl.FLOAT, data);
+  }
+
+  function bindIfPresent(gl, program, name, texture, unit) {
+    const loc = gl.getUniformLocation(program, name);
+    if (!loc) return;
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(loc, unit);
+  }
+
+  async function setupShaderBox(fileName, container) {
+    const ui = createCard(fileName);
+    container.append(ui.root);
+
+    const gl = ui.canvas.getContext("webgl2");
+    if (!gl) {
+      setStatus(ui, false, "No WebGL2", "WebGL2 context could not be created.");
+      return null;
+    }
+
+    try {
+      const shaderUrl = `${BASE_URL}shaders/${fileName}`;
+      const source = await fetch(shaderUrl).then((r) => {
+        if (!r.ok)
+          throw new Error(
+            `Failed to fetch shader (${r.status}) from ${shaderUrl}`,
+          );
+        return r.text();
+      });
+
+      const prepared = prepareFragmentSource(source);
+      const fragmentSource = prepared.source;
+
+      const v = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
+      const f = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+      const linked = linkProgram(gl, v.shader, f.shader);
+
+      gl.deleteShader(v.shader);
+      gl.deleteShader(f.shader);
+
+      const staticTextures = createStaticTextures(gl);
+      const fft = createFFTTexture(gl);
+      const fftSmooth = createFFTTexture(gl);
+      const fftIntegrated = createFFTTexture(gl);
+
+      const uniforms = {
+        fGlobalTime: gl.getUniformLocation(linked.program, "fGlobalTime"),
+        fFrameTime: gl.getUniformLocation(linked.program, "fFrameTime"),
+        v2Resolution: gl.getUniformLocation(linked.program, "v2Resolution"),
+        iResolution: gl.getUniformLocation(linked.program, "iResolution"),
+        iTime: gl.getUniformLocation(linked.program, "iTime"),
+        iTimeDelta: gl.getUniformLocation(linked.program, "iTimeDelta"),
+        iFrame: gl.getUniformLocation(linked.program, "iFrame"),
+        iMouse: gl.getUniformLocation(linked.program, "iMouse"),
+        iDate: gl.getUniformLocation(linked.program, "iDate"),
+        iSampleRate: gl.getUniformLocation(linked.program, "iSampleRate"),
+      };
+
+      bindIfPresent(gl, linked.program, "texFFT", fft.tex, 0);
+      bindIfPresent(gl, linked.program, "texFFTSmoothed", fftSmooth.tex, 1);
+      bindIfPresent(
+        gl,
+        linked.program,
+        "texFFTIntegrated",
+        fftIntegrated.tex,
+        2,
+      );
+      bindIfPresent(
+        gl,
+        linked.program,
+        "texPreviousFrame",
+        staticTextures.black,
+        3,
+      );
+      bindIfPresent(
+        gl,
+        linked.program,
+        "texChecker",
+        staticTextures.checker,
+        4,
+      );
+      bindIfPresent(gl, linked.program, "texNoise", staticTextures.noise, 5);
+      bindIfPresent(gl, linked.program, "texTex1", staticTextures.noise, 6);
+      bindIfPresent(gl, linked.program, "texTex2", staticTextures.checker, 7);
+      bindIfPresent(gl, linked.program, "texTex3", staticTextures.black, 8);
+      bindIfPresent(gl, linked.program, "texTex4", staticTextures.noise, 9);
+      bindIfPresent(gl, linked.program, "iChannel0", staticTextures.noise, 10);
+      bindIfPresent(gl, linked.program, "iChannel1", staticTextures.checker, 11);
+      bindIfPresent(gl, linked.program, "iChannel2", staticTextures.black, 12);
+      bindIfPresent(gl, linked.program, "iChannel3", fft.tex, 13);
+
+      setStatus(
+        ui,
+        true,
+        "Running",
+        [v.info, f.info, linked.info].filter(Boolean).join("\n") ||
+          "Compiled successfully.",
+      );
+
+      return {
+        gl,
+        ui,
+        program: linked.program,
+        uniforms,
+        fft,
+        fftSmooth,
+        fftIntegrated,
+        frame: 0,
+        profile: prepared.profile,
+      };
+    } catch (err) {
+      const details = String(err.message || err);
+      setStatus(ui, false, "Error", details);
+      return null;
+    }
+  }
+
+  function resizeCanvasToDisplaySize(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const displayWidth = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+    const displayHeight = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+    }
+  }
+
+  function renderAll(instances, now) {
+    const t = (now - startTime) * 0.001;
+    const dt = (now - lastFrameTime) * 0.001;
+    lastFrameTime = now;
+
+    for (const instance of instances) {
+      if (!instance) continue;
+      const { gl, ui, program, uniforms, fft, fftSmooth, fftIntegrated } =
+        instance;
+
+      resizeCanvasToDisplaySize(ui.canvas);
+      gl.viewport(0, 0, ui.canvas.width, ui.canvas.height);
+
+      updateFFT(gl, fft, t, 0);
+      updateFFT(gl, fftSmooth, t * 0.6, 1);
+      updateFFT(gl, fftIntegrated, t * 0.3, 2);
+
+      gl.useProgram(program);
+
+      if (uniforms.fGlobalTime) gl.uniform1f(uniforms.fGlobalTime, t);
+      if (uniforms.fFrameTime) gl.uniform1f(uniforms.fFrameTime, dt);
+      if (uniforms.v2Resolution)
+        gl.uniform2f(uniforms.v2Resolution, ui.canvas.width, ui.canvas.height);
+      if (uniforms.iResolution)
+        gl.uniform3f(uniforms.iResolution, ui.canvas.width, ui.canvas.height, 1);
+      if (uniforms.iTime) gl.uniform1f(uniforms.iTime, t);
+      if (uniforms.iTimeDelta) gl.uniform1f(uniforms.iTimeDelta, dt);
+      if (uniforms.iFrame) gl.uniform1i(uniforms.iFrame, instance.frame || 0);
+      if (uniforms.iMouse) gl.uniform4f(uniforms.iMouse, 0, 0, 0, 0);
+      if (uniforms.iDate) {
+        const nowDate = new Date();
+        const secs = nowDate.getHours() * 3600 + nowDate.getMinutes() * 60 + nowDate.getSeconds() + nowDate.getMilliseconds() / 1000;
+        gl.uniform4f(uniforms.iDate, nowDate.getFullYear(), nowDate.getMonth() + 1, nowDate.getDate(), secs);
+      }
+      if (uniforms.iSampleRate) gl.uniform1f(uniforms.iSampleRate, 44100);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      instance.frame = (instance.frame || 0) + 1;
+    }
+
+    requestAnimationFrame((next) => renderAll(instances, next));
+  }
+
+  async function main() {
+    const container = document.getElementById("shader-grid");
+    const emptyState = document.getElementById("empty-state");
+
+    if (!SHADER_FILES.length) {
+      if (emptyState) emptyState.hidden = false;
+      return;
+    }
+
+    if (emptyState) emptyState.hidden = true;
+    const instances = await Promise.all(
+      SHADER_FILES.map((file) => setupShaderBox(file, container)),
+    );
+    requestAnimationFrame((now) => renderAll(instances, now));
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", main);
+  } else {
+    main();
+  }
+</script>
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="generator" content={Astro.generator} />
+    <title>Live Shaders Grid</title>
+  </head>
+  <body>
+    <header>
+      <h1>GLSL Boxes (Bonzomatic + Shadertoy)</h1>
+      <div class="sub">
+        Each card compiles and runs a fragment shader with Bonzomatic and
+        Shadertoy compatibility uniforms.
+      </div>
+    </header>
+    <main>
+      <p id="empty-state" class="empty-state" hidden>
+        No shaders found under <strong>public/shaders</strong>.
+      </p>
+      <section id="shader-grid" class="grid"></section>
+    </main>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    color-scheme: dark;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    font-family:
+      system-ui,
+      -apple-system,
+      Segoe UI,
+      Roboto,
+      sans-serif;
+    background: #0f1115;
+    color: #dce1ea;
+  }
+  header {
+    padding: 16px 20px;
+    border-bottom: 1px solid #222835;
+  }
+  h1 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
+  .sub {
+    margin-top: 6px;
+    font-size: 0.85rem;
+    color: #98a3b8;
+  }
+  main {
+    padding: 16px;
+  }
+  .empty-state {
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border: 1px solid #3f1b20;
+    border-radius: 8px;
+    background: #23151a;
+    color: #ffb4be;
+    font-size: 0.86rem;
+  }
+  .grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+  .card {
+    border: 1px solid #222835;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #151a22;
+  }
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid #222835;
+  }
+  .name {
+    font-size: 0.86rem;
+    color: #c7d0e0;
+  }
+  .status {
+    font-size: 0.78rem;
+    padding: 2px 6px;
+    border-radius: 999px;
+  }
+  .ok {
+    background: #183420;
+    color: #7fe29c;
+  }
+  .err {
+    background: #3f1b20;
+    color: #ff9ca8;
+  }
+  canvas {
+    width: 100%;
+    display: block;
+    background: black;
+    aspect-ratio: 16 / 9;
+  }
+  .log {
+    margin: 0;
+    padding: 10px 12px;
+    border-top: 1px solid #222835;
+    font-size: 0.74rem;
+    line-height: 1.35;
+    color: #ffb4be;
+    white-space: pre-wrap;
+    min-height: 40px;
+  }
+  .log.ok-log {
+    color: #8fe3a8;
+  }
+</style>
