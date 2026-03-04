@@ -76,6 +76,14 @@ void main() {
   let audioSystemPromise = null;
   let audioUnlockedByGesture = false;
   let lastDebugUpdate = 0;
+  const FFT_BIN_COUNT = 1024;
+  const FFT_SMOOTH_FACTOR = 0.9;
+  const FFT_SLIGHT_SMOOTH_FACTOR = 0.6;
+  const FFT_PEAK_NORMALIZATION = true;
+  const FFT_PEAK_MIN_VALUE = 0.01;
+  const FFT_PEAK_SMOOTHING = 0.995;
+  const FFT_INTEGRATED_SCALE = 60.0;
+  const FFT_INTEGRATED_WRAP = 1024.0;
 
   function createCard(name) {
     const root = document.createElement("article");
@@ -550,15 +558,15 @@ void main() {
   }
 
   function createFFTTexture(gl) {
-    const bytes = new Uint8Array(256);
+    const data = new Float32Array(FFT_BIN_COUNT);
     const tex = makeTexture(
       gl,
-      gl.R8,
-      256,
+      gl.R32F,
+      FFT_BIN_COUNT,
       1,
       gl.RED,
-      gl.UNSIGNED_BYTE,
-      bytes,
+      gl.FLOAT,
+      data,
       {
         minFilter: gl.NEAREST,
         magFilter: gl.NEAREST,
@@ -566,26 +574,23 @@ void main() {
         wrapT: gl.CLAMP_TO_EDGE,
       },
     );
-    return { tex, bytes };
+    return { tex, data };
   }
 
   function updateFFTTexture(gl, fft, data) {
-    const bytes = fft.bytes;
-    for (let i = 0; i < bytes.length; i += 1) {
-      const v = Math.max(0, Math.min(1, data[i] || 0));
-      bytes[i] = Math.round(v * 255);
-    }
+    const dst = fft.data;
+    for (let i = 0; i < dst.length; i += 1) dst[i] = data[i] || 0;
     gl.bindTexture(gl.TEXTURE_2D, fft.tex);
     gl.texSubImage2D(
       gl.TEXTURE_2D,
       0,
       0,
       0,
-      256,
+      FFT_BIN_COUNT,
       1,
       gl.RED,
-      gl.UNSIGNED_BYTE,
-      bytes,
+      gl.FLOAT,
+      dst,
     );
   }
 
@@ -609,9 +614,12 @@ void main() {
         context: null,
         analyser: null,
         freq: null,
-        raw: new Float32Array(256),
-        smooth: new Float32Array(256),
-        integrated: new Float32Array(256),
+        raw: new Float32Array(FFT_BIN_COUNT),
+        smooth: new Float32Array(FFT_BIN_COUNT),
+        slightlySmooth: new Float32Array(FFT_BIN_COUNT),
+        integrated: new Float32Array(FFT_BIN_COUNT),
+        amplification: 1,
+        peakLevel: FFT_PEAK_MIN_VALUE,
         graphInitTried: false,
       };
 
@@ -626,7 +634,7 @@ void main() {
           const context = new AudioCtx();
           const source = context.createMediaElementSource(system.audio);
           const analyser = context.createAnalyser();
-          analyser.fftSize = 512;
+          analyser.fftSize = FFT_BIN_COUNT * 2;
           analyser.smoothingTimeConstant = 0;
 
           source.connect(analyser);
@@ -634,7 +642,7 @@ void main() {
 
           system.context = context;
           system.analyser = analyser;
-          system.freq = new Uint8Array(analyser.frequencyBinCount);
+          system.freq = new Float32Array(analyser.frequencyBinCount);
         } catch {
           system.graphInitTried = false;
         }
@@ -671,26 +679,55 @@ void main() {
   function sampleAudioFFT(audioSystem, dt) {
     if (!audioSystem) {
       return {
-        raw: new Float32Array(256),
-        smooth: new Float32Array(256),
-        integrated: new Float32Array(256),
+        raw: new Float32Array(FFT_BIN_COUNT),
+        smooth: new Float32Array(FFT_BIN_COUNT),
+        integrated: new Float32Array(FFT_BIN_COUNT),
       };
     }
 
-    const { analyser, freq, raw, smooth, integrated } = audioSystem;
+    const { analyser, freq, raw, smooth, slightlySmooth, integrated } = audioSystem;
     if (analyser && freq) {
-      analyser.getByteFrequencyData(freq);
+      analyser.getFloatFrequencyData(freq);
+
+      let framePeak = FFT_PEAK_MIN_VALUE;
       for (let i = 0; i < raw.length; i += 1) {
-        raw[i] = freq[i] / 255;
+        const db = freq[i];
+        const magnitude = Number.isFinite(db) ? Math.pow(10, db / 20) * 2 : 0;
+        raw[i] = magnitude * audioSystem.amplification;
+        if (magnitude > framePeak) framePeak = magnitude;
+      }
+
+      if (FFT_PEAK_NORMALIZATION) {
+        if (framePeak > audioSystem.peakLevel) {
+          audioSystem.peakLevel = framePeak;
+        } else {
+          audioSystem.peakLevel =
+            audioSystem.peakLevel * FFT_PEAK_SMOOTHING +
+            framePeak * (1 - FFT_PEAK_SMOOTHING);
+          if (audioSystem.peakLevel < FFT_PEAK_MIN_VALUE) {
+            audioSystem.peakLevel = FFT_PEAK_MIN_VALUE;
+          }
+        }
+        audioSystem.amplification = 1 / audioSystem.peakLevel;
+        for (let i = 0; i < raw.length; i += 1) {
+          raw[i] = raw[i] * audioSystem.amplification;
+        }
       }
     } else {
       raw.fill(0);
     }
 
-    const decay = Math.exp(-dt * 8);
+    const integratedScale = dt * FFT_INTEGRATED_SCALE;
     for (let i = 0; i < smooth.length; i += 1) {
-      smooth[i] = Math.max(raw[i], smooth[i] * decay);
-      integrated[i] += raw[i] * dt;
+      smooth[i] =
+        smooth[i] * FFT_SMOOTH_FACTOR + raw[i] * (1 - FFT_SMOOTH_FACTOR);
+      slightlySmooth[i] =
+        slightlySmooth[i] * FFT_SLIGHT_SMOOTH_FACTOR +
+        raw[i] * (1 - FFT_SLIGHT_SMOOTH_FACTOR);
+      integrated[i] = integrated[i] + slightlySmooth[i] * integratedScale;
+      if (integrated[i] > FFT_INTEGRATED_WRAP) {
+        integrated[i] -= FFT_INTEGRATED_WRAP;
+      }
     }
 
     return { raw, smooth, integrated };
@@ -751,12 +788,17 @@ void main() {
     const currentTime = audioSystem.audio
       ? audioSystem.audio.currentTime.toFixed(2)
       : "0.00";
+    const peakLevel =
+      typeof audioSystem.peakLevel === "number"
+        ? audioSystem.peakLevel.toFixed(3)
+        : "n/a";
 
     debugEl.textContent = [
       "Audio debug",
       `track: ${MUSIC_FILE || "none"}`,
       `gestureUnlocked: ${audioUnlockedByGesture}`,
       `context: ${contextState} | analyser: ${analyserReady}`,
+      `peakLevel: ${peakLevel}`,
       `audio paused: ${paused} | muted: ${muted} | t: ${currentTime}s`,
       `raw max/avg: ${rawStats.max.toFixed(3)} / ${rawStats.avg.toFixed(3)}`,
       `smooth max/avg: ${smoothStats.max.toFixed(3)} / ${smoothStats.avg.toFixed(3)}`,
