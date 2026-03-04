@@ -4,7 +4,10 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const shadersRoot = fileURLToPath(new URL("../../public/shaders", import.meta.url));
+const shadersRoot = fileURLToPath(
+  new URL("../../public/shaders", import.meta.url),
+);
+const musicRoot = fileURLToPath(new URL("../../public/music", import.meta.url));
 
 async function collectShaderFiles(directory, prefix = "") {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -33,14 +36,29 @@ try {
 } catch {
   shaderFiles = [];
 }
+
+let musicFiles = [];
+try {
+  const entries = await readdir(musicRoot, { withFileTypes: true });
+  musicFiles = entries
+    .filter(
+      (entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".mp3"),
+    )
+    .map((entry) => `music/${entry.name}`)
+    .sort();
+} catch {
+  musicFiles = [];
+}
 const baseUrl = import.meta.env.BASE_URL;
 ---
 
-<script define:vars={{ shaderFiles, baseUrl }}>
+<script define:vars={{ shaderFiles, baseUrl, musicFiles }}>
   // @ts-nocheck
   const SHADER_FILES = shaderFiles;
+  const MUSIC_FILES = musicFiles;
 
   const BASE_URL = baseUrl;
+  const MUSIC_FILE = MUSIC_FILES[0] || null;
 
   const vertexSource = `#version 300 es
 precision highp float;
@@ -55,6 +73,9 @@ void main() {
 
   const startTime = performance.now();
   let lastFrameTime = startTime;
+  let audioSystemPromise = null;
+  let audioUnlockedByGesture = false;
+  let lastDebugUpdate = 0;
 
   function createCard(name) {
     const root = document.createElement("article");
@@ -410,19 +431,22 @@ layout(location = 0) out vec4 out_color;
 
 `;
 
-    const mainWrapper = hasMainImage && !hasMain
-      ? `
+    const mainWrapper =
+      hasMainImage && !hasMain
+        ? `
 void main() {
   mainImage(out_color, gl_FragCoord.xy);
 }
 `
-      : "";
+        : "";
 
     return `${header}${out}${mainWrapper}`;
   }
 
   function prepareFragmentSource(src) {
-    const isShadertoy = /mainImage\s*\(/.test(src) || /\biResolution\b|\biTime\b|\biChannel[0-3]\b/.test(src);
+    const isShadertoy =
+      /mainImage\s*\(/.test(src) ||
+      /\biResolution\b|\biTime\b|\biChannel[0-3]\b/.test(src);
     if (isShadertoy) {
       return {
         source: shadertoyToWebGL2(src),
@@ -443,13 +467,20 @@ void main() {
     format,
     type,
     pixels,
+    options = {},
   ) {
+    const {
+      minFilter = gl.LINEAR,
+      magFilter = gl.LINEAR,
+      wrapS = gl.REPEAT,
+      wrapT = gl.REPEAT,
+    } = options;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magFilter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapS);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrapT);
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
@@ -519,34 +550,276 @@ void main() {
   }
 
   function createFFTTexture(gl) {
+    const bytes = new Uint8Array(256);
     const tex = makeTexture(
       gl,
-      gl.R32F,
+      gl.R8,
       256,
       1,
       gl.RED,
-      gl.FLOAT,
-      new Float32Array(256),
+      gl.UNSIGNED_BYTE,
+      bytes,
+      {
+        minFilter: gl.NEAREST,
+        magFilter: gl.NEAREST,
+        wrapS: gl.CLAMP_TO_EDGE,
+        wrapT: gl.CLAMP_TO_EDGE,
+      },
     );
-    return { tex, data: new Float32Array(256) };
+    return { tex, bytes };
   }
 
-  function updateFFT(gl, fft, time, mode = 0) {
-    const data = fft.data;
-    for (let i = 0; i < data.length; i += 1) {
-      const x = i / (data.length - 1);
-      const base =
-        Math.sin(time * (1.2 + mode * 0.4) + x * 20.0 + mode * 0.7) * 0.5 + 0.5;
-      const pulse = Math.max(0, Math.sin(time * (3.0 + mode) - x * 8.0));
-      data[i] = Math.min(1, base * 0.65 + pulse * 0.35);
+  function updateFFTTexture(gl, fft, data) {
+    const bytes = fft.bytes;
+    for (let i = 0; i < bytes.length; i += 1) {
+      const v = Math.max(0, Math.min(1, data[i] || 0));
+      bytes[i] = Math.round(v * 255);
     }
     gl.bindTexture(gl.TEXTURE_2D, fft.tex);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RED, gl.FLOAT, data);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0,
+      0,
+      256,
+      1,
+      gl.RED,
+      gl.UNSIGNED_BYTE,
+      bytes,
+    );
+  }
+
+  async function getAudioSystem() {
+    if (audioSystemPromise) return audioSystemPromise;
+
+    audioSystemPromise = (async () => {
+      if (!MUSIC_FILE) return null;
+
+      const audio = new Audio(`${BASE_URL}${MUSIC_FILE}`);
+      audio.loop = true;
+      audio.autoplay = true;
+      audio.muted = true;
+      audio.playsInline = true;
+      try {
+        await audio.play();
+      } catch {}
+
+      const system = {
+        audio,
+        context: null,
+        analyser: null,
+        freq: null,
+        raw: new Float32Array(256),
+        smooth: new Float32Array(256),
+        integrated: new Float32Array(256),
+        graphInitTried: false,
+      };
+
+      system.ensureGraph = async () => {
+        if (system.analyser || system.graphInitTried) return;
+        system.graphInitTried = true;
+
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!AudioCtx) return;
+
+          const context = new AudioCtx();
+          const source = context.createMediaElementSource(system.audio);
+          const analyser = context.createAnalyser();
+          analyser.fftSize = 512;
+          analyser.smoothingTimeConstant = 0;
+
+          source.connect(analyser);
+          analyser.connect(context.destination);
+
+          system.context = context;
+          system.analyser = analyser;
+          system.freq = new Uint8Array(analyser.frequencyBinCount);
+        } catch {
+          system.graphInitTried = false;
+        }
+      };
+
+      return system;
+    })();
+
+    return audioSystemPromise;
+  }
+
+  async function ensureAudioRunning(audioSystem) {
+    if (!audioSystem) return;
+
+    if (audioSystem.ensureGraph) {
+      try {
+        await audioSystem.ensureGraph();
+      } catch {}
+    }
+
+    if (audioSystem.context && audioSystem.context.state !== "running") {
+      try {
+        await audioSystem.context.resume();
+      } catch {}
+    }
+
+    if (audioSystem.audio.paused) {
+      try {
+        await audioSystem.audio.play();
+      } catch {}
+    }
+  }
+
+  function sampleAudioFFT(audioSystem, dt) {
+    if (!audioSystem) {
+      return {
+        raw: new Float32Array(256),
+        smooth: new Float32Array(256),
+        integrated: new Float32Array(256),
+      };
+    }
+
+    const { analyser, freq, raw, smooth, integrated } = audioSystem;
+    if (analyser && freq) {
+      analyser.getByteFrequencyData(freq);
+      for (let i = 0; i < raw.length; i += 1) {
+        raw[i] = freq[i] / 255;
+      }
+    } else {
+      raw.fill(0);
+    }
+
+    const decay = Math.exp(-dt * 8);
+    for (let i = 0; i < smooth.length; i += 1) {
+      smooth[i] = Math.max(raw[i], smooth[i] * decay);
+      integrated[i] += raw[i] * dt;
+    }
+
+    return { raw, smooth, integrated };
+  }
+
+  function formatFFTPreview(data) {
+    if (!data || !data.length) return "n/a";
+    const a = data[0] || 0;
+    const b = data[8] || 0;
+    const c = data[32] || 0;
+    const d = data[96] || 0;
+    return [a, b, c, d].map((v) => v.toFixed(3)).join(", ");
+  }
+
+  function computeFFTStats(data) {
+    if (!data || !data.length) return { max: 0, avg: 0 };
+    let max = 0;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 1) {
+      const v = data[i] || 0;
+      if (v > max) max = v;
+      sum += v;
+    }
+    return { max, avg: sum / data.length };
+  }
+
+  function updateAudioDebug(audioSystem, fftData, instances, now) {
+    const debugEl = document.getElementById("audio-debug");
+    if (!debugEl) return;
+    if (now - lastDebugUpdate < 150) return;
+    lastDebugUpdate = now;
+
+    const fftUsingShaders = instances.filter((x) => x && x.usesTexFFT).length;
+    const smoothUsingShaders = instances.filter(
+      (x) => x && x.usesTexFFTSmoothed,
+    ).length;
+    const integratedUsingShaders = instances.filter(
+      (x) => x && x.usesTexFFTIntegrated,
+    ).length;
+
+    if (!audioSystem) {
+      debugEl.textContent = [
+        "Audio debug",
+        "audioSystem: none",
+        `shader texFFT uniforms: ${fftUsingShaders}/${instances.length}`,
+      ].join("\n");
+      return;
+    }
+
+    const rawStats = computeFFTStats(fftData.raw);
+    const smoothStats = computeFFTStats(fftData.smooth);
+    const contextState = audioSystem.context
+      ? audioSystem.context.state
+      : "none";
+    const analyserReady = audioSystem.analyser ? "yes" : "no";
+    const paused = audioSystem.audio ? String(audioSystem.audio.paused) : "n/a";
+    const muted = audioSystem.audio ? String(audioSystem.audio.muted) : "n/a";
+    const currentTime = audioSystem.audio
+      ? audioSystem.audio.currentTime.toFixed(2)
+      : "0.00";
+
+    debugEl.textContent = [
+      "Audio debug",
+      `track: ${MUSIC_FILE || "none"}`,
+      `gestureUnlocked: ${audioUnlockedByGesture}`,
+      `context: ${contextState} | analyser: ${analyserReady}`,
+      `audio paused: ${paused} | muted: ${muted} | t: ${currentTime}s`,
+      `raw max/avg: ${rawStats.max.toFixed(3)} / ${rawStats.avg.toFixed(3)}`,
+      `smooth max/avg: ${smoothStats.max.toFixed(3)} / ${smoothStats.avg.toFixed(3)}`,
+      `raw bins [0,8,32,96]: ${formatFFTPreview(fftData.raw)}`,
+      `shader texFFT uniforms: ${fftUsingShaders}/${instances.length}`,
+      `shader texFFTSmoothed uniforms: ${smoothUsingShaders}/${instances.length}`,
+      `shader texFFTIntegrated uniforms: ${integratedUsingShaders}/${instances.length}`,
+    ].join("\n");
+  }
+
+  function setupAudioToggle(audioSystem) {
+    const toggle = document.getElementById("audio-toggle");
+    const trackEl = document.getElementById("audio-track");
+
+    if (trackEl) {
+      if (MUSIC_FILE) {
+        const fileName = MUSIC_FILE.split("/").pop() || MUSIC_FILE;
+        trackEl.textContent = `Track: ${fileName}`;
+      } else {
+        trackEl.textContent = "Track: none";
+      }
+    }
+
+    if (!toggle) return;
+
+    if (!audioSystem) {
+      toggle.disabled = true;
+      toggle.textContent = "No music file";
+      return;
+    }
+
+    const unlockAudio = () => {
+      audioUnlockedByGesture = true;
+      ensureAudioRunning(audioSystem);
+      window.removeEventListener("pointerdown", unlockAudio);
+      window.removeEventListener("keydown", unlockAudio);
+      window.removeEventListener("touchstart", unlockAudio);
+    };
+
+    window.addEventListener("pointerdown", unlockAudio, { passive: true });
+    window.addEventListener("keydown", unlockAudio, { passive: true });
+    window.addEventListener("touchstart", unlockAudio, { passive: true });
+
+    const syncText = () => {
+      toggle.textContent = audioSystem.audio.muted
+        ? "Unmute music"
+        : "Mute music";
+    };
+
+    toggle.addEventListener("click", async () => {
+      audioUnlockedByGesture = true;
+      await ensureAudioRunning(audioSystem);
+
+      audioSystem.audio.muted = !audioSystem.audio.muted;
+      syncText();
+    });
+
+    syncText();
   }
 
   function bindIfPresent(gl, program, name, texture, unit) {
     const loc = gl.getUniformLocation(program, name);
-    if (!loc) return;
+    if (loc === null) return;
     gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.uniform1i(loc, unit);
@@ -629,7 +902,13 @@ void main() {
       bindIfPresent(gl, linked.program, "texTex3", staticTextures.black, 8);
       bindIfPresent(gl, linked.program, "texTex4", staticTextures.noise, 9);
       bindIfPresent(gl, linked.program, "iChannel0", staticTextures.noise, 10);
-      bindIfPresent(gl, linked.program, "iChannel1", staticTextures.checker, 11);
+      bindIfPresent(
+        gl,
+        linked.program,
+        "iChannel1",
+        staticTextures.checker,
+        11,
+      );
       bindIfPresent(gl, linked.program, "iChannel2", staticTextures.black, 12);
       bindIfPresent(gl, linked.program, "iChannel3", fft.tex, 13);
 
@@ -646,6 +925,11 @@ void main() {
         ui,
         program: linked.program,
         uniforms,
+        usesTexFFT: gl.getUniformLocation(linked.program, "texFFT") !== null,
+        usesTexFFTSmoothed:
+          gl.getUniformLocation(linked.program, "texFFTSmoothed") !== null,
+        usesTexFFTIntegrated:
+          gl.getUniformLocation(linked.program, "texFFTIntegrated") !== null,
         fft,
         fftSmooth,
         fftIntegrated,
@@ -669,10 +953,27 @@ void main() {
     }
   }
 
-  function renderAll(instances, now) {
+  function renderAll(instances, now, audioSystem) {
     const t = (now - startTime) * 0.001;
     const dt = (now - lastFrameTime) * 0.001;
     lastFrameTime = now;
+
+    if (audioSystem && audioUnlockedByGesture) {
+      if (!audioSystem._lastEnsure || now - audioSystem._lastEnsure > 1000) {
+        audioSystem._lastEnsure = now;
+        if (!audioSystem.analyser) {
+          ensureAudioRunning(audioSystem);
+        } else if (
+          audioSystem.context &&
+          audioSystem.context.state !== "running"
+        ) {
+          ensureAudioRunning(audioSystem);
+        }
+      }
+    }
+
+    const fftData = sampleAudioFFT(audioSystem, dt);
+    updateAudioDebug(audioSystem, fftData, instances, now);
 
     for (const instance of instances) {
       if (!instance) continue;
@@ -682,9 +983,9 @@ void main() {
       resizeCanvasToDisplaySize(ui.canvas);
       gl.viewport(0, 0, ui.canvas.width, ui.canvas.height);
 
-      updateFFT(gl, fft, t, 0);
-      updateFFT(gl, fftSmooth, t * 0.6, 1);
-      updateFFT(gl, fftIntegrated, t * 0.3, 2);
+      updateFFTTexture(gl, fft, fftData.raw);
+      updateFFTTexture(gl, fftSmooth, fftData.smooth);
+      updateFFTTexture(gl, fftIntegrated, fftData.integrated);
 
       gl.useProgram(program);
 
@@ -693,15 +994,30 @@ void main() {
       if (uniforms.v2Resolution)
         gl.uniform2f(uniforms.v2Resolution, ui.canvas.width, ui.canvas.height);
       if (uniforms.iResolution)
-        gl.uniform3f(uniforms.iResolution, ui.canvas.width, ui.canvas.height, 1);
+        gl.uniform3f(
+          uniforms.iResolution,
+          ui.canvas.width,
+          ui.canvas.height,
+          1,
+        );
       if (uniforms.iTime) gl.uniform1f(uniforms.iTime, t);
       if (uniforms.iTimeDelta) gl.uniform1f(uniforms.iTimeDelta, dt);
       if (uniforms.iFrame) gl.uniform1i(uniforms.iFrame, instance.frame || 0);
       if (uniforms.iMouse) gl.uniform4f(uniforms.iMouse, 0, 0, 0, 0);
       if (uniforms.iDate) {
         const nowDate = new Date();
-        const secs = nowDate.getHours() * 3600 + nowDate.getMinutes() * 60 + nowDate.getSeconds() + nowDate.getMilliseconds() / 1000;
-        gl.uniform4f(uniforms.iDate, nowDate.getFullYear(), nowDate.getMonth() + 1, nowDate.getDate(), secs);
+        const secs =
+          nowDate.getHours() * 3600 +
+          nowDate.getMinutes() * 60 +
+          nowDate.getSeconds() +
+          nowDate.getMilliseconds() / 1000;
+        gl.uniform4f(
+          uniforms.iDate,
+          nowDate.getFullYear(),
+          nowDate.getMonth() + 1,
+          nowDate.getDate(),
+          secs,
+        );
       }
       if (uniforms.iSampleRate) gl.uniform1f(uniforms.iSampleRate, 44100);
 
@@ -709,7 +1025,7 @@ void main() {
       instance.frame = (instance.frame || 0) + 1;
     }
 
-    requestAnimationFrame((next) => renderAll(instances, next));
+    requestAnimationFrame((next) => renderAll(instances, next, audioSystem));
   }
 
   async function main() {
@@ -722,10 +1038,18 @@ void main() {
     }
 
     if (emptyState) emptyState.hidden = true;
+    let audioSystem = null;
+    try {
+      audioSystem = await getAudioSystem();
+    } catch {
+      audioSystem = null;
+    }
+    setupAudioToggle(audioSystem);
+
     const instances = await Promise.all(
       SHADER_FILES.map((file) => setupShaderBox(file, container)),
     );
-    requestAnimationFrame((now) => renderAll(instances, now));
+    requestAnimationFrame((now) => renderAll(instances, now, audioSystem));
   }
 
   if (document.readyState === "loading") {
@@ -751,6 +1075,11 @@ void main() {
         Each card compiles and runs a fragment shader with Bonzomatic and
         Shadertoy compatibility uniforms.
       </div>
+      <div id="audio-track" class="audio-track"></div>
+      <pre id="audio-debug" class="audio-debug"></pre>
+      <button id="audio-toggle" class="audio-toggle" type="button">
+        Unmute music
+      </button>
     </header>
     <main>
       <p id="empty-state" class="empty-state" hidden>
@@ -792,6 +1121,37 @@ void main() {
     margin-top: 6px;
     font-size: 0.85rem;
     color: #98a3b8;
+  }
+  .audio-toggle {
+    margin-top: 10px;
+    border: 1px solid #334158;
+    border-radius: 8px;
+    background: #1c2533;
+    color: #dce1ea;
+    padding: 6px 10px;
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+  .audio-toggle:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+  }
+  .audio-track {
+    margin-top: 8px;
+    font-size: 0.76rem;
+    color: #7f8ca3;
+  }
+  .audio-debug {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border: 1px solid #2a3548;
+    border-radius: 8px;
+    background: #121925;
+    color: #9fb0cb;
+    font-size: 0.71rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    max-width: 600px;
   }
   main {
     padding: 16px;
