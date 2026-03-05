@@ -4,6 +4,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// filesystem locations are always relative to the project, not the URL base
 const shadersRoot = fileURLToPath(
   new URL("../../public/shaders", import.meta.url),
 );
@@ -22,7 +23,7 @@ async function collectShaderFiles(directory, prefix = "") {
       continue;
     }
 
-    if (entry.isFile() && entry.name.endsWith(".glsl")) {
+    if (entry.isFile() && entry.name.endsWith("")) {
       files.push(nextPrefix.replace(/\\/g, "/"));
     }
   }
@@ -49,7 +50,13 @@ try {
 } catch {
   musicFiles = [];
 }
-const baseUrl = import.meta.env.BASE_URL;
+// Astro exposes the configured `base` value via the runtime and
+// also through import.meta.env.BASE_URL. prefer Astro.base when available
+// so that we don't have to rely on the client-side bundler to inject the
+// environment variable (and it works during SSR too).
+const rawBaseUrl = import.meta.env.BASE_URL || Astro.base || "/";
+// ensure there is a trailing slash, since we concatenate paths against it later
+const baseUrl = rawBaseUrl.endsWith("/") ? rawBaseUrl : rawBaseUrl + "/";
 ---
 
 <script define:vars={{ shaderFiles, baseUrl, musicFiles }}>
@@ -57,7 +64,11 @@ const baseUrl = import.meta.env.BASE_URL;
   const SHADER_FILES = shaderFiles;
   const MUSIC_FILES = musicFiles;
 
-  const BASE_URL = baseUrl;
+  // turn the path‑only base into an absolute URL in the browser by
+  // prefixing the current origin. this avoids the subtle bugs that show
+  // up when you call `new URL(..., '/my/base/')` with a relative base.
+  const BASE_URL =
+    (typeof window !== "undefined" ? window.location.origin : "") + baseUrl;
   const MUSIC_FILE = MUSIC_FILES[0] || null;
 
   const vertexSource = `#version 300 es
@@ -601,7 +612,9 @@ void main() {
     audioSystemPromise = (async () => {
       if (!MUSIC_FILE) return null;
 
-      const audio = new Audio(`${BASE_URL}${MUSIC_FILE}`);
+      // use URL constructor to avoid missing or double slashes
+      // use simple string concat now that BASE_URL is absolute
+      const audio = new Audio(BASE_URL + MUSIC_FILE);
       audio.loop = true;
       audio.autoplay = true;
       audio.muted = true;
@@ -687,8 +700,15 @@ void main() {
       };
     }
 
-    const { analyser, freq, raw, smooth, slightlySmooth, integratedState, integrated } =
-      audioSystem;
+    const {
+      analyser,
+      freq,
+      raw,
+      smooth,
+      slightlySmooth,
+      integratedState,
+      integrated,
+    } = audioSystem;
     if (analyser && freq) {
       analyser.getFloatFrequencyData(freq);
 
@@ -727,7 +747,8 @@ void main() {
       slightlySmooth[i] =
         slightlySmooth[i] * FFT_SLIGHT_SMOOTH_FACTOR +
         raw[i] * (1 - FFT_SLIGHT_SMOOTH_FACTOR);
-      integratedState[i] = integratedState[i] + slightlySmooth[i] * integratedScale;
+      integratedState[i] =
+        integratedState[i] + slightlySmooth[i] * integratedScale;
       if (integratedState[i] > FFT_INTEGRATED_WRAP) {
         integratedState[i] -= FFT_INTEGRATED_WRAP;
       }
@@ -882,7 +903,7 @@ void main() {
     }
 
     try {
-      const shaderUrl = `${BASE_URL}shaders/${fileName}`;
+      const shaderUrl = BASE_URL + `shaders/${fileName}`;
       const source = await fetch(shaderUrl).then((r) => {
         if (!r.ok)
           throw new Error(
@@ -1108,28 +1129,46 @@ void main() {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="icon" href="/favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href={baseUrl + "favicon.svg"} />
+    <link rel="icon" href={baseUrl + "favicon.ico"} />
     <meta name="viewport" content="width=device-width" />
     <meta name="generator" content={Astro.generator} />
-    <title>Live Shaders Grid</title>
+    <title>Brage's shaders</title>
   </head>
   <body>
     <header>
-      <h1>GLSL Boxes (Bonzomatic + Shadertoy)</h1>
-      <div class="sub">
-        Each card compiles and runs a fragment shader with Bonzomatic and
-        Shadertoy compatibility uniforms.
-      </div>
+      <h1>Brage's fragment shaders</h1>
+      <p class="sub">
+        This is a small page showing the fragment shaders I have written, mostly
+        as part of live shader coding using the program <a
+          href="https://github.com/TheNuSan/Bonzomatic">Bonzomatic</a
+        >. Bonzomatic uses a custom dialect of GLSL, so the shaders here are
+        converted to be compatible with WebGL2, and some uniforms are added to
+        make the shaders respond to music. It's not 100% accurate to how
+        Bonzomatic renders the shaders (yet).
+      </p>
+      <p class="sub">
+        If I can make this work properly, I will publish a javascript library
+        that converts Bonzomatic shaders to WebGL compatible shaders to make it
+        easy to show them on the web.
+      </p>
       <div id="audio-track" class="audio-track"></div>
       <pre id="audio-debug" class="audio-debug"></pre>
       <button id="audio-toggle" class="audio-toggle" type="button">
-        Unmute music
+        Play music
       </button>
     </header>
     <main>
       <p id="empty-state" class="empty-state" hidden>
-        No shaders found under <strong>public/shaders</strong>.
+        No shaders found under <strong>public/shaders</strong>
+        {
+          baseUrl && (
+            <>
+              {" "}
+              (served at <strong>{baseUrl}shaders</strong>)
+            </>
+          )
+        }.
       </p>
       <section id="shader-grid" class="grid"></section>
     </main>
