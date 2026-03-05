@@ -38,8 +38,7 @@ export function tokenizeGLSL(src: string): GLSLToken[] {
 
     if (ch === "/" && src[i + 1] === "*") {
       let j = i + 2;
-      while (j < src.length && !(src[j] === "*" && src[j + 1] === "/"))
-        j += 1;
+      while (j < src.length && !(src[j] === "*" && src[j + 1] === "/")) j += 1;
       j = Math.min(src.length, j + 2);
       tokens.push({ type: "comment", text: src.slice(i, j) });
       i = j;
@@ -60,11 +59,7 @@ export function tokenizeGLSL(src: string): GLSLToken[] {
       }
     }
 
-    if (
-      (ch >= "A" && ch <= "Z") ||
-      (ch >= "a" && ch <= "z") ||
-      ch === "_"
-    ) {
+    if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_") {
       let j = i + 1;
       while (j < src.length) {
         const c = src[j];
@@ -216,7 +211,9 @@ export function bonzomaticFloatLiteralPass(src: string): string {
     const pos = sigPos.get(i);
     const prev = pos > 0 ? tokens[sigIndices[pos - 1]] : null;
     const next =
-      pos < sigIndices.length - 1 ? tokens[sigIndices[sigIndices.length - 1]] : null;
+      pos < sigIndices.length - 1
+        ? tokens[sigIndices[sigIndices.length - 1]]
+        : null;
 
     if (
       (prev && relationalOps.has(prev.text)) ||
@@ -315,7 +312,10 @@ void main() {
   return `${header}${out}${mainWrapper}`;
 }
 
-export function prepareFragmentSource(src: string): { source: string; profile: "shadertoy" | "bonzomatic" } {
+export function prepareFragmentSource(src: string): {
+  source: string;
+  profile: "shadertoy" | "bonzomatic";
+} {
   const isShadertoy =
     /mainImage\s*\(/.test(src) ||
     /\biResolution\b|\biTime\b|\biChannel[0-3]\b/.test(src);

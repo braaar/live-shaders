@@ -111,13 +111,7 @@ export async function setupShaderBox(
 
     bindIfPresent(gl, linked.program, "texFFT", fft.tex, 0);
     bindIfPresent(gl, linked.program, "texFFTSmoothed", fftSmooth.tex, 1);
-    bindIfPresent(
-      gl,
-      linked.program,
-      "texFFTIntegrated",
-      fftIntegrated.tex,
-      2,
-    );
+    bindIfPresent(gl, linked.program, "texFFTIntegrated", fftIntegrated.tex, 2);
     bindIfPresent(
       gl,
       linked.program,
@@ -125,26 +119,14 @@ export async function setupShaderBox(
       staticTextures.black,
       3,
     );
-    bindIfPresent(
-      gl,
-      linked.program,
-      "texChecker",
-      staticTextures.checker,
-      4,
-    );
+    bindIfPresent(gl, linked.program, "texChecker", staticTextures.checker, 4);
     bindIfPresent(gl, linked.program, "texNoise", staticTextures.noise, 5);
     bindIfPresent(gl, linked.program, "texTex1", staticTextures.noise, 6);
     bindIfPresent(gl, linked.program, "texTex2", staticTextures.checker, 7);
     bindIfPresent(gl, linked.program, "texTex3", staticTextures.black, 8);
     bindIfPresent(gl, linked.program, "texTex4", staticTextures.noise, 9);
     bindIfPresent(gl, linked.program, "iChannel0", staticTextures.noise, 10);
-    bindIfPresent(
-      gl,
-      linked.program,
-      "iChannel1",
-      staticTextures.checker,
-      11,
-    );
+    bindIfPresent(gl, linked.program, "iChannel1", staticTextures.checker, 11);
     bindIfPresent(gl, linked.program, "iChannel2", staticTextures.black, 12);
     bindIfPresent(gl, linked.program, "iChannel3", fft.tex, 13);
 
@@ -227,12 +209,7 @@ export function renderAll(
     if (uniforms.v2Resolution)
       gl.uniform2f(uniforms.v2Resolution, ui.canvas.width, ui.canvas.height);
     if (uniforms.iResolution)
-      gl.uniform3f(
-        uniforms.iResolution,
-        ui.canvas.width,
-        ui.canvas.height,
-        1,
-      );
+      gl.uniform3f(uniforms.iResolution, ui.canvas.width, ui.canvas.height, 1);
     if (uniforms.iTime) gl.uniform1f(uniforms.iTime, t);
     if (uniforms.iTimeDelta) gl.uniform1f(uniforms.iTimeDelta, dt);
     if (uniforms.iFrame) gl.uniform1i(uniforms.iFrame, instance.frame || 0);
@@ -258,6 +235,7 @@ export function renderAll(
     instance.frame = (instance.frame || 0) + 1;
   }
 
-  requestAnimationFrame((next) => renderAll(instances, next, audioSystem, timings));
+  requestAnimationFrame((next) =>
+    renderAll(instances, next, audioSystem, timings),
+  );
 }
-

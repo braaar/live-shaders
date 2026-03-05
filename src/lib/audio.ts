@@ -69,7 +69,9 @@ export function markAudioUnlocked(): void {
   audioUnlockedByGesture = true;
 }
 
-export async function getAudioSystem(musicUrl: string | null): Promise<AudioSystem | null> {
+export async function getAudioSystem(
+  musicUrl: string | null,
+): Promise<AudioSystem | null> {
   if (audioSystemPromise) return audioSystemPromise;
 
   audioSystemPromise = (async () => {
@@ -137,7 +139,9 @@ export async function getAudioSystem(musicUrl: string | null): Promise<AudioSyst
   return audioSystemPromise;
 }
 
-export async function ensureAudioRunning(audioSystem: AudioSystem | null): Promise<void> {
+export async function ensureAudioRunning(
+  audioSystem: AudioSystem | null,
+): Promise<void> {
   if (!audioSystem) return;
 
   if (audioSystem.ensureGraph) {
@@ -234,7 +238,10 @@ export function computeBonzomaticFFT(
   }
 }
 
-export function sampleAudioFFT(audioSystem: AudioSystem | null, dt: number): { raw: Float32Array; smooth: Float32Array; integrated: Float32Array } {
+export function sampleAudioFFT(
+  audioSystem: AudioSystem | null,
+  dt: number,
+): { raw: Float32Array; smooth: Float32Array; integrated: Float32Array } {
   if (!audioSystem) {
     return {
       raw: new Float32Array(FFT_BIN_COUNT),
@@ -353,7 +360,8 @@ export function sampleAudioFFT(audioSystem: AudioSystem | null, dt: number): { r
         integratedState[i] +
         dynamic * integratedScale * LEGACY_FFT_INTEGRATED_DYNAMIC_GAIN;
     } else {
-      integratedState[i] = integratedState[i] + slightlySmooth[i] * integratedScale;
+      integratedState[i] =
+        integratedState[i] + slightlySmooth[i] * integratedScale;
     }
 
     if (integratedState[i] > FFT_INTEGRATED_WRAP) {
@@ -368,7 +376,9 @@ export function sampleAudioFFT(audioSystem: AudioSystem | null, dt: number): { r
   return { raw, smooth, integrated };
 }
 
-export function formatFFTPreview(data: Float32Array | null | undefined): string {
+export function formatFFTPreview(
+  data: Float32Array | null | undefined,
+): string {
   if (!data || !data.length) return "n/a";
   const a = data[0] || 0;
   const b = data[8] || 0;
@@ -377,7 +387,10 @@ export function formatFFTPreview(data: Float32Array | null | undefined): string 
   return [a, b, c, d].map((v) => v.toFixed(3)).join(", ");
 }
 
-export function computeFFTStats(data: Float32Array | null | undefined): { max: number; avg: number } {
+export function computeFFTStats(data: Float32Array | null | undefined): {
+  max: number;
+  avg: number;
+} {
   if (!data || !data.length) return { max: 0, avg: 0 };
   let max = 0;
   let sum = 0;
@@ -391,7 +404,11 @@ export function computeFFTStats(data: Float32Array | null | undefined): { max: n
 
 export function updateAudioDebug(
   audioSystem: AudioSystem | null,
-  fftData: { raw: Float32Array; smooth: Float32Array; integrated: Float32Array },
+  fftData: {
+    raw: Float32Array;
+    smooth: Float32Array;
+    integrated: Float32Array;
+  },
   instances: any[],
   now: number,
   musicFile: string | null,
@@ -420,9 +437,7 @@ export function updateAudioDebug(
 
   const rawStats = computeFFTStats(fftData.raw);
   const smoothStats = computeFFTStats(fftData.smooth);
-  const contextState = audioSystem.context
-    ? audioSystem.context.state
-    : "none";
+  const contextState = audioSystem.context ? audioSystem.context.state : "none";
   const analyserReady = audioSystem.analyser ? "yes" : "no";
   const paused = audioSystem.audio ? String(audioSystem.audio.paused) : "n/a";
   const muted = audioSystem.audio ? String(audioSystem.audio.muted) : "n/a";
@@ -453,7 +468,10 @@ export function updateAudioDebug(
 
 let lastDebugUpdate = 0;
 
-export function setupAudioToggle(audioSystem: AudioSystem | null, musicFile: string | null): void {
+export function setupAudioToggle(
+  audioSystem: AudioSystem | null,
+  musicFile: string | null,
+): void {
   const toggle = document.getElementById("audio-toggle");
   const trackEl = document.getElementById("audio-track");
 
@@ -487,9 +505,7 @@ export function setupAudioToggle(audioSystem: AudioSystem | null, musicFile: str
   window.addEventListener("touchstart", unlockAudio, { passive: true });
 
   const syncText = () => {
-    toggle.textContent = audioSystem.audio.muted
-      ? "Start music"
-      : "Mute music";
+    toggle.textContent = audioSystem.audio.muted ? "Start music" : "Mute music";
   };
 
   toggle.addEventListener("click", async () => {

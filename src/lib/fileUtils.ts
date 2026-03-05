@@ -5,7 +5,10 @@ import { join } from "node:path";
  * Recursively collect .glsl files under a directory.
  * Returns paths relative to the given directory, using forward slashes.
  */
-export async function collectShaderFiles(directory: string, prefix: string = ""): Promise<string[]> {
+export async function collectShaderFiles(
+  directory: string,
+  prefix: string = "",
+): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files: string[] = [];
 

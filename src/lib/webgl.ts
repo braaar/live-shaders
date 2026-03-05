@@ -1,4 +1,8 @@
-export function compileShader(gl: WebGL2RenderingContext, type: number, source: string): { shader: WebGLShader; info: string } {
+export function compileShader(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string,
+): { shader: WebGLShader; info: string } {
   const shader = gl.createShader(type)!;
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
@@ -11,7 +15,11 @@ export function compileShader(gl: WebGL2RenderingContext, type: number, source: 
   return { shader, info: info.trim() };
 }
 
-export function linkProgram(gl: WebGL2RenderingContext, vs: WebGLShader, fs: WebGLShader): { program: WebGLProgram; info: string } {
+export function linkProgram(
+  gl: WebGL2RenderingContext,
+  vs: WebGLShader,
+  fs: WebGLShader,
+): { program: WebGLProgram; info: string } {
   const program = gl.createProgram()!;
   gl.attachShader(program, vs);
   gl.attachShader(program, fs);
@@ -122,7 +130,10 @@ export function createStaticTextures(gl: WebGL2RenderingContext) {
 
 import { FFT_BIN_COUNT } from "./constants.ts";
 
-export function createFFTTexture(gl: WebGL2RenderingContext): { tex: WebGLTexture; data: Float32Array } {
+export function createFFTTexture(gl: WebGL2RenderingContext): {
+  tex: WebGLTexture;
+  data: Float32Array;
+} {
   const data = new Float32Array(FFT_BIN_COUNT);
   const tex = makeTexture(
     gl,
@@ -142,7 +153,11 @@ export function createFFTTexture(gl: WebGL2RenderingContext): { tex: WebGLTextur
   return { tex, data };
 }
 
-export function updateFFTTexture(gl: WebGL2RenderingContext, fft: { tex: WebGLTexture; data: Float32Array }, data: Float32Array) {
+export function updateFFTTexture(
+  gl: WebGL2RenderingContext,
+  fft: { tex: WebGLTexture; data: Float32Array },
+  data: Float32Array,
+) {
   for (let i = 0; i < dst.length; i += 1) dst[i] = data[i] || 0;
   gl.bindTexture(gl.TEXTURE_2D, fft.tex);
   gl.texSubImage2D(
@@ -209,7 +224,17 @@ export function createCard(name: string) {
   return { root, canvas, statusEl, log };
 }
 
-export function setStatus(ui: { root: HTMLElement; canvas: HTMLCanvasElement; statusEl: HTMLElement; log: HTMLElement }, ok: boolean, text: string, details = "") {
+export function setStatus(
+  ui: {
+    root: HTMLElement;
+    canvas: HTMLCanvasElement;
+    statusEl: HTMLElement;
+    log: HTMLElement;
+  },
+  ok: boolean,
+  text: string,
+  details = "",
+) {
   ui.statusEl.className = `status ${ok ? "ok" : "err"}`;
   ui.statusEl.textContent = text;
   ui.log.className = `log ${ok ? "ok-log" : ""}`;
