@@ -2,7 +2,9 @@
 import { fileURLToPath } from "node:url";
 import { getShaderFiles, getMusicFiles } from "../lib/fileUtils.ts";
 
-// TODO: use https://github.com/patriciogonzalezvivo/glslCanvas
+// base URL handling similar to main branch
+const rawBaseUrl = import.meta.env.BASE_URL || Astro.base || "/";
+const baseUrl = rawBaseUrl.endsWith("/") ? rawBaseUrl : rawBaseUrl + "/";
 
 const shadersRoot = fileURLToPath(
   new URL("../../public/shaders", import.meta.url),
@@ -10,19 +12,17 @@ const shadersRoot = fileURLToPath(
 const musicRoot = fileURLToPath(new URL("../../public/music", import.meta.url));
 
 let shaderFiles = [];
-let musicFiles = [];
 try {
   shaderFiles = (await getShaderFiles(shadersRoot)).sort();
 } catch {
   shaderFiles = [];
 }
+let musicFiles = [];
 try {
   musicFiles = await getMusicFiles(musicRoot);
 } catch {
   musicFiles = [];
 }
-
-const baseUrl = import.meta.env.BASE_URL;
 ---
 
 <script
@@ -42,7 +42,8 @@ const baseUrl = import.meta.env.BASE_URL;
 
   const SHADER_FILES = shaderFiles;
   const MUSIC_FILES = musicFiles;
-  const BASE_URL = baseUrl;
+  const BASE_URL =
+    (typeof window !== "undefined" ? window.location.origin : "") + baseUrl;
   const MUSIC_FILE = MUSIC_FILES[0] || null;
 
   const startTime = performance.now();
@@ -51,7 +52,6 @@ const baseUrl = import.meta.env.BASE_URL;
     lastFrameTime: { value: startTime },
     musicFile: MUSIC_FILE,
   };
-
   async function main() {
     const container = document.getElementById("shader-grid");
     const emptyState = document.getElementById("empty-state");
@@ -89,19 +89,29 @@ const baseUrl = import.meta.env.BASE_URL;
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="icon" href="/favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href={baseUrl + "favicon.svg"} />
+    <link rel="icon" href={baseUrl + "favicon.ico"} />
     <meta name="viewport" content="width=device-width" />
     <meta name="generator" content={Astro.generator} />
-    <title>Live Shaders Grid</title>
+    <title>Brage's shaders</title>
   </head>
   <body>
     <header>
       <h1>GLSL Boxes (Bonzomatic + Shadertoy)</h1>
-      <div class="sub">
-        Each card compiles and runs a fragment shader with Bonzomatic and
-        Shadertoy compatibility uniforms.
-      </div>
+      <p class="sub">
+        This is a small page showing the fragment shaders I have written, mostly
+        as part of live shader coding using the program <a
+          href="https://github.com/TheNuSan/Bonzomatic">Bonzomatic</a
+        >. Bonzomatic uses a custom dialect of GLSL, so the shaders here are
+        converted to be compatible with WebGL2, and some uniforms are added to
+        make the shaders respond to music. It's not 100% accurate to how
+        Bonzomatic renders the shaders (yet).
+      </p>
+      <p class="sub">
+        If I can make this work properly, I will publish a javascript library
+        that converts Bonzomatic shaders to WebGL compatible shaders to make it
+        easy to show them on the web.
+      </p>
       <div id="audio-track" class="audio-track"></div>
       <pre id="audio-debug" class="audio-debug"></pre>
       <button id="fft-mode-toggle" class="audio-toggle" type="button">
@@ -113,7 +123,15 @@ const baseUrl = import.meta.env.BASE_URL;
     </header>
     <main>
       <p id="empty-state" class="empty-state" hidden>
-        No shaders found under <strong>public/shaders</strong>.
+        No shaders found under <strong>public/shaders</strong>
+        {
+          baseUrl && (
+            <>
+              {" "}
+              (served at <strong>{baseUrl}shaders</strong>)
+            </>
+          )
+        }.
       </p>
       <section id="shader-grid" class="grid"></section>
     </main>
