@@ -1,0 +1,75 @@
+---
+import type { Uniforms } from "../bonzomatic";
+
+export interface BonzomaticPlayerProps {
+  /** URL to a fragment shader written in the Bonzomatic dialect. */
+  src: string;
+  /** any uniforms that should be supplied to the shader program */
+  uniforms?: Uniforms;
+  /** canvas dimensions, defaults to 320×180 to match the legacy bonzomatic size */
+  width?: number;
+  height?: number;
+}
+
+export let src: string;
+export let uniforms: Uniforms = {};
+export let width = 320;
+export let height = 180;
+---
+
+<script lang="ts" type="module">
+  import { createProgramFromFragment, setUniform } from "../bonzomatic";
+
+  // props serialized from the SSR phase; cloning ensures we don't capture
+  // reactive references from Astro that aren't available on the client.
+  const { src: SHADER_URL, uniforms: UNIFORMS } =
+    /** @type {{src:string;uniforms:Record<string,any>}} */
+    JSON.parse(JSON.stringify({ src, uniforms }));
+
+  const canvas = document.querySelector("canvas.bonzomatic");
+  if (!canvas) throw new Error("missing canvas element");
+
+  const gl = canvas.getContext("webgl2");
+  if (!gl) throw new Error("WebGL2 not available in this browser");
+
+  async function init() {
+    const resp = await fetch(SHADER_URL);
+    const frag = await resp.text();
+    const program = createProgramFromFragment(gl, frag);
+    gl.useProgram(program);
+
+    // set any static uniforms passed in
+    for (const [name, value] of Object.entries(UNIFORMS || {})) {
+      const loc = gl.getUniformLocation(program, name);
+      setUniform(gl, loc, value);
+    }
+
+    const start = performance.now();
+    function render() {
+      const t = (performance.now() - start) / 1000;
+      const timeLoc = gl.getUniformLocation(program, "iTime");
+      if (timeLoc) gl.uniform1f(timeLoc, t);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      requestAnimationFrame(render);
+    }
+    render();
+  }
+
+  init().catch((err) => {
+    console.error("BonzomaticPlayer init failed", err);
+  });
+</script>
+
+<canvas
+  class="bonzomatic"
+  width={width}
+  height={height}
+  aria-label="Bonzomatic shader output"></canvas>
+
+<style>
+  canvas.bonzomatic {
+    max-width: 100%;
+    image-rendering: crisp-edges;
+  }
+</style>
