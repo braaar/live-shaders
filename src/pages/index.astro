@@ -86,7 +86,6 @@ void main() {
   let lastFrameTime = startTime;
   let audioSystemPromise = null;
   let audioUnlockedByGesture = false;
-  let lastDebugUpdate = 0;
   const FFT_BIN_COUNT = 1024;
   const FFT_SMOOTH_FACTOR = 0.9;
   const FFT_SLIGHT_SMOOTH_FACTOR = 0.6;
@@ -779,61 +778,6 @@ void main() {
     return { max, avg: sum / data.length };
   }
 
-  function updateAudioDebug(audioSystem, fftData, instances, now) {
-    const debugEl = document.getElementById("audio-debug");
-    if (!debugEl) return;
-    if (now - lastDebugUpdate < 150) return;
-    lastDebugUpdate = now;
-
-    const fftUsingShaders = instances.filter((x) => x && x.usesTexFFT).length;
-    const smoothUsingShaders = instances.filter(
-      (x) => x && x.usesTexFFTSmoothed,
-    ).length;
-    const integratedUsingShaders = instances.filter(
-      (x) => x && x.usesTexFFTIntegrated,
-    ).length;
-
-    if (!audioSystem) {
-      debugEl.textContent = [
-        "Audio debug",
-        "audioSystem: none",
-        `shader texFFT uniforms: ${fftUsingShaders}/${instances.length}`,
-      ].join("\n");
-      return;
-    }
-
-    const rawStats = computeFFTStats(fftData.raw);
-    const smoothStats = computeFFTStats(fftData.smooth);
-    const contextState = audioSystem.context
-      ? audioSystem.context.state
-      : "none";
-    const analyserReady = audioSystem.analyser ? "yes" : "no";
-    const paused = audioSystem.audio ? String(audioSystem.audio.paused) : "n/a";
-    const muted = audioSystem.audio ? String(audioSystem.audio.muted) : "n/a";
-    const currentTime = audioSystem.audio
-      ? audioSystem.audio.currentTime.toFixed(2)
-      : "0.00";
-    const peakLevel =
-      typeof audioSystem.peakLevel === "number"
-        ? audioSystem.peakLevel.toFixed(3)
-        : "n/a";
-
-    debugEl.textContent = [
-      "Audio debug",
-      `track: ${MUSIC_FILE || "none"}`,
-      `gestureUnlocked: ${audioUnlockedByGesture}`,
-      `context: ${contextState} | analyser: ${analyserReady}`,
-      `peakLevel: ${peakLevel}`,
-      `audio paused: ${paused} | muted: ${muted} | t: ${currentTime}s`,
-      `raw max/avg: ${rawStats.max.toFixed(3)} / ${rawStats.avg.toFixed(3)}`,
-      `smooth max/avg: ${smoothStats.max.toFixed(3)} / ${smoothStats.avg.toFixed(3)}`,
-      `raw bins [0,8,32,96]: ${formatFFTPreview(fftData.raw)}`,
-      `shader texFFT uniforms: ${fftUsingShaders}/${instances.length}`,
-      `shader texFFTSmoothed uniforms: ${smoothUsingShaders}/${instances.length}`,
-      `shader texFFTIntegrated uniforms: ${integratedUsingShaders}/${instances.length}`,
-    ].join("\n");
-  }
-
   function setupAudioToggle(audioSystem) {
     const toggle = document.getElementById("audio-toggle");
     const trackEl = document.getElementById("audio-track");
@@ -1040,7 +984,6 @@ void main() {
     }
 
     const fftData = sampleAudioFFT(audioSystem, dt);
-    updateAudioDebug(audioSystem, fftData, instances, now);
 
     for (const instance of instances) {
       if (!instance) continue;
@@ -1153,7 +1096,6 @@ void main() {
         easy to show them on the web.
       </p>
       <div id="audio-track" class="audio-track"></div>
-      <pre id="audio-debug" class="audio-debug"></pre>
       <button id="audio-toggle" class="audio-toggle" type="button">
         Play music
       </button>
@@ -1225,18 +1167,6 @@ void main() {
     margin-top: 8px;
     font-size: 0.76rem;
     color: #7f8ca3;
-  }
-  .audio-debug {
-    margin: 8px 0 0;
-    padding: 8px 10px;
-    border: 1px solid #2a3548;
-    border-radius: 8px;
-    background: #121925;
-    color: #9fb0cb;
-    font-size: 0.71rem;
-    line-height: 1.35;
-    white-space: pre-wrap;
-    max-width: 600px;
   }
   main {
     padding: 16px;
